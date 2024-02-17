@@ -1,0 +1,373 @@
+---
+title: "Quarto Practice"
+author: "Evan Howard"
+format: 
+  html: 
+    code-fold: true
+bibliography: references.bib
+---
+
+## 2023 Playoffs
+
+In the following document I'll be practicing with quarto by taking a look at pitchers during the 2023 MLB playoffs. There is no rhyme or reason to what data I'm looking at, nor is there a particular reason for the visuals. This document is more of a primer to Quarto so I can better compare it to Shiny.
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>. If you also need an introduction to Statcast data and the definitions of each column see [Statcast Search CSV Documentation](https://baseballsavant.mlb.com/csv-docs). I would also be remissed if I didn't point out that we're going to be using the `baseballr` package [@baseballr]. As always, don't forget to support Pop Punk!
+
+<iframe style="border-radius:12px" src="https://open.spotify.com/embed/playlist/37i9dQZF1DX1ewVhAJ17m4?utm_source=generator" width="80%" height="152" frameBorder="0" allowfullscreen allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy">
+
+</iframe>
+
+```{r}
+#| label: load-packages
+#| include: false
+library(shiny)
+library(gridlayout)
+library(ggplot2)
+library(gt)
+library(dplyr)
+library(bslib)
+library(baseballr)
+library(scales)
+library(gridExtra)
+library(grid)
+library(plotly)
+library(corrplot)
+```
+
+```{r}
+#| cache: true
+baseball <- statcast_search("2023-10-03", "2023-11-1")
+#deleting deprecated columns and desc column
+baseball <- baseball[-c(11:14, 16, 40:41)]
+
+#finding R horz and heigh release
+Rmean_horz_release <- baseball %>% 
+  filter(p_throws == "R") %>%
+    summarise(round(mean(release_pos_x), 2))
+          
+Rmean_height_release <- baseball %>%
+  filter(p_throws == "R") %>%
+    summarise(round(mean(release_pos_z), 2))
+
+#finding L horz and heigh release
+Lmean_horz_release <- baseball %>% 
+  filter(p_throws == "L") %>%
+    summarise(round(mean(release_pos_x), 2))
+          
+Lmean_height_release <- baseball %>%
+  filter(p_throws == "L") %>%
+    summarise(round(mean(release_pos_z), 2))
+```
+
+The Statcast CSV documentation says that the both the vertical release and horizontal release positions are from the catcher's perspective. Therefore, right-handed pitchers' horizontal release position is represented by negative numbers, and left-handed pitchers' as positive numbers. This is of course in relation to 0 being the middle of the rubber. For right-handed pitchers the average horizontal release point was `{r} Rmean_horz_release` and for left-handed pitchers it was `{r} Lmean_horz_release`.
+
+As you can see below in @fig-allrelease the average release height for right-handed pitchers in the playoffs last year was `{r} Rmean_height_release` feet, and for left-handed pitchers it was `{r} Lmean_height_release` feet. However, there are a few clusters that fall well below 4 feet.
+
+```{r, message = FALSE}
+#| label: fig-allrelease
+#| fig-cap: "Release points for R and L handed pitchers"
+#| fig-subcap:
+#|   - "Release points"
+#|   - "Count of release height"
+#| layout-nrow: 1
+
+ggplot(baseball, aes(x=release_pos_x, y = release_pos_z, color = p_throws))+
+  geom_point(alpha = .8, size = 2)+
+  scale_color_brewer(palette = "Dark2")+
+  theme_minimal()+
+  ylab("Release Height in Feet") + xlab("Horizontal Release Position in Feet")+
+  labs(color = "Pitcher Handedness")
+
+#finding pitchers whose release height was below 4.5 feet
+below_four_release <- baseball %>%
+  filter(release_pos_z < 4) %>%
+  group_by(pitcher)
+
+#finding unique pitcher id and then names. I had to separately look up both pitchers however I need to find a way to run the search for both pitchers at once.
+#657044 = Ryan Thompson
+#571948 = Hoby Milner
+#unique(below_four_release$pitcher)
+#playername_lookup("571948")
+
+#replacing ID with name
+below_four_release <- below_four_release %>%
+  mutate(pitcher = case_when(
+    pitcher == "657044" ~ "Ryan Thompson",
+    pitcher == "571948" ~ "Hoby Milner"
+  ))
+
+#creating histogram of release height
+ggplot(baseball, aes(x=release_pos_z, fill = p_throws))+
+  geom_histogram(alpha = .8, show.legend = FALSE) +
+  scale_fill_brewer(palette = "Dark2")+
+  theme_minimal()+
+  ylab("Count of Occurence") + xlab("Release Height in Feet")
+  
+```
+
+When looking at the pitchers whose release height was below 4 feet we see two pitchers, one lefty and one righty, Hoby Milner and Ryan Thompson, respectively. Milner was right at 4 feet for average release height, and Thompson was at 3.6. However, we see that Milner only had two pitches that were below 4 feet. In fact, his overall average release height was 4.26 feet. Extremely close to our 4 feet and under however, lets focus on Thompson for the rest of this study.
+
+```{r}
+#| label: fig-underfour
+#creating table for the pitchers
+below_four_release %>%
+        group_by("Pitcher" = pitcher) %>%
+          summarise(
+            "Throws" = unique(p_throws),
+            "Frequency" = n(),
+            "Avg Release Height" = mean(release_pos_z),
+            "Max Velo" = max(release_speed),
+            "Avg Velo" = mean(release_speed)
+         )%>%
+      gt()%>%
+      fmt_number(
+        columns = c("Avg Release Height","Avg Velo"),
+        decimals = 1
+      )
+
+Milner_overall_avg_release <- baseball %>%
+  filter(pitcher == 571948) %>%
+  summarise(round(mean(release_pos_z), 2))
+```
+
+With such low release heights, one might come to the conclusion that Thompson has a relatively low VAA. However, how can we figure out VAA from Statcast data? Luckily, thanks to Harry Pavlidis of *Baseball Prospectus* and Alex Chamberlain of *Fangraphs* we can figure out VAA with the formula below [@VAA].
+
+$$
+vy_f = -sqrt(vy0^2 - (2 * ay *(y0 - yf)))
+$$
+
+$$
+t = (vy_f - vy0) / ay
+$$
+
+$$
+vz_f = vz0 + (az * t)
+$$
+
+$$
+VAA = -arctan(vz_f / vy_f) * (180 / pi)
+$$
+
+Per [Statcast Search CSV Documentation](https://baseballsavant.mlb.com/csv-docs):
+
+-   vy0 = The velocity of the pitch, in feet per second, in the y-dimension towards home plate, determined at y = 50 feet
+-   ay = The acceleration of the pitch, in feet per second, in y-dimension, determined at y = 50 feet
+-   y0 = 50 (in feet)
+-   yf = 17/12 (home plate width converted to feet)
+-   vz0 = The velocity of the pitch, in feet per second, in z-dimension, vertically, determined at y = 50 feet
+-   az = The acceleration of the pitch, in feet per second, in z-dimension, determined at y = 50 feet
+
+```{r}
+#inputting VAA for every pitch for each pitcher
+y0 <- 50 
+yf = 17/12
+
+below_four_release$vy_f <- 
+  -sqrt((below_four_release$vy0 ^2) - (2 * below_four_release$ay * (y0 - yf)))
+
+below_four_release$t <-
+  (below_four_release$vy_f - below_four_release$vy0) / below_four_release$ay
+
+below_four_release$vz_f <-
+  below_four_release$vz0 + (below_four_release$az * below_four_release$t)
+
+below_four_release$VAA <-
+  -atan(below_four_release$vz_f / below_four_release$vy_f) * (180 / pi)
+
+#calculating avg VAA for both pitchers
+Thompson_avg_VAA <- below_four_release %>%
+  filter(pitcher == "Ryan Thompson") %>%
+  summarise(round(mean(VAA), 2))
+
+#finding all strikes, balls, and hits
+below_four_release$is_strike <- ifelse(below_four_release$description %in% c("foul",
+                                                                             "called_strike", 
+                                                                             "swinging_strike", 
+                                                                             "foul_tip"),1,0)
+
+below_four_release$is_ball <- ifelse(below_four_release$description %in% c("ball",
+                                                                           "blocked_ball"),1,0)
+
+below_four_release$into_play <- ifelse(below_four_release$description %in% 
+                                         c("hit_into_play"),1,0)
+    
+#unique(below_four_release$description)
+below_four_release %>%
+  filter(pitcher == "Ryan Thompson") %>%
+  group_by("Pitch Name" = pitch_name) %>%
+  summarise(
+    "Avg Velo" = round(mean(release_speed), 2),
+    "Avg VAA" = round(mean(VAA), 2),
+    "Avg Spin Rate" = round(mean(release_spin_rate),0)) %>%
+    #"Str%" = sum(as.integer(is_strike)) / n()).  need to figure out strike and ball %s
+  gt()
+```
+
+When viewing his strike zone during the playoffs, I would think that both his sinker and slider would play extremely well, given his arm slot and release height. From the scatter plot limits below we lost 4 rows which were 3 ft or greater away from the strike zone. However, we also see that Thompson's slider sits around the middle of the strike zone (in terms of height), and his sinker is all over the place, but with the greatest concentration in the bottom of the zone.
+
+[Want to try something fun and look at individual pitch types? Double click on one of the pitch types in the legend, and watch as the other two pitch types disappear! Just double click again to have them all come back. Perhaps, you would like to look at two pitches together and exclude one? Simply click whichever pitch you want to get rid of!]{.aside}
+
+```{r, message = FALSE}
+
+#strike zone scatter plot with plate_x multiplied by -1 to be from the pitcher's perspective
+Thompson_sz <- below_four_release %>%
+  filter(pitcher == "Ryan Thompson") %>%
+  ggplot(below_four_release, mapping = aes(x = plate_x * -1, y = plate_z,
+                                           text = paste(
+                                             "Velo: ", release_speed, "\n",
+                                             "VAA: ", round(VAA,2), "\n",
+                                             "Launch Angle: ", launch_angle, "\n",
+                                             "Launch Speed: ", launch_speed, "\n",
+                                             "Descr.: ", description, "\n"
+                                           )))+
+  geom_point(aes(color = pitch_type), size = 2)+
+  scale_color_brewer(palette = "Dark2")+
+  
+  #creating the outer limits of strike zone
+  geom_segment(x = (-11.5/12)+.25, y = (44.08/12), xend = (5.8/12)+.25, yend = (44.08/12)) +
+  geom_segment(x = (-11.5/12)+.25, y = (18.29/12), xend = (5.8/12)+.25, yend = (18.29/12)) +
+  geom_segment(x = (-11.5/12)+.25, y = (44.08/12), xend = (-11.5/12)+.25, yend = (18.29/12)) +
+  geom_segment(x = (5.5/12)+.25, y = (44.08/12), xend = (5.8/12)+.25, yend = (18.29/12))+
+  
+  #creating the inner quadrants of the strike zone
+  geom_segment(x = (-11.5/12)+.25, y = (35.48/12), xend = (-5.835/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (35.48/12), xend = (-0.165/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (35.48/12), xend = (5.5/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-11.5/12)+.25, y = (26.88/12), xend = (-5.835/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (26.88/12), xend = (-0.165/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (26.88/12), xend = (5.5/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (44.08/12), xend = (-5.835/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (35.48/12), xend = (-5.835/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (26.88/12), xend = (-5.835/12)+.25, yend = (18.29/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (44.08/12), xend = (-0.165/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (35.48/12), xend = (-0.165/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (26.88/12), xend = (-0.165/12)+.25, yend = (18.29/12), linewidth = .3)+
+  
+  #creating home plate
+  geom_segment(x = (-.708 -(2/12))+.25, y = (.708/2), xend = (0-(3/12))+.25, yend = (1.417/2.5)) +
+  geom_segment(x = (0-(3/12))+.25, y = (1.417/2.5), xend = (.708-(4/12))+.25, yend = (.708/2)) +
+  geom_segment(x = (.708-(4/12))+.25, y = (.708/2), xend = (.708-(3/12))+.25, yend = (0)) +
+  geom_segment(x = (-.708-(3/12))+.25, y = (0), xend = (-.708-(2/12))+.25, yend = (.708/2)) +
+  geom_segment(x = (-.708-(3/12))+.25, y = (0), xend = (.708-(3/12))+.25, yend = (0))+
+  
+  #adjusting details
+  ggtitle("Pitch Strike Zone Location")+
+  theme(
+        plot.title = element_text(color = 'black', size = 16, face = "bold", hjust = 0.5),
+        axis.title.x = element_text(color = 'black', size = 14, face = "bold", hjust = 0.5),
+        axis.title.y = element_text(color = 'black', size = 14, face = "bold", hjust = 0.5),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14, face = "bold"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.spacing = unit(3, "lines")) +
+ xlim(-3, 3) + ylim(0, 5) +
+  labs(x = "Pitch Horizontal Location (ft)", 
+       y = "Pitch Height from Ground (ft)", color = "Pitch Type")
+
+ggplotly(Thompson_sz, tooltip = "text")
+```
+
+At first I was going to make a filter that constructed the shadow zone and only took pitches within the strike zone and shadow zone. However, once I was looking at those pitches, and looking at the strike zone graph above, I noticed that there were still a lot of pitches outside of this limit that were either strikes (called or swinging) or had a bat put on them. Therefore, I expanded the limits of the filter to be 3.75 and 1.24 for the top and bottom of the strike zone, while the limits of the left and right side of the zone were -1 and 1, respectively. With this filter in mind, we observe 96 pitches that fit this criteria.
+
+```{r, message = FALSE}
+
+#filtering for strike zone limits
+filtered_below_four <- below_four_release %>%
+  filter(pitcher == "Ryan Thompson", plate_z <= 3.75 & plate_z >= 1.24, 
+         plate_x >= -1 & plate_x <= 1)
+
+filtered_sz <- filtered_below_four %>%
+  ggplot(filtered_below_four, mapping = aes(x = plate_x * -1, y = plate_z,
+                                           text = paste(
+                                             "Velo: ", release_speed, "\n",
+                                             "VAA: ", round(VAA,2), "\n",
+                                             "Launch Angle: ", launch_angle, "\n",
+                                             "Launch Speed: ", launch_speed, "\n",
+                                             "Descr.: ", description, "\n"
+                                           )))+
+  geom_point(aes(color = pitch_type), size = 2)+
+  scale_color_brewer(palette = "Dark2")+
+  
+  #creating the outer limits of strike zone
+  geom_segment(x = (-11.5/12)+.25, y = (44.08/12), xend = (5.8/12)+.25, yend = (44.08/12)) +
+  geom_segment(x = (-11.5/12)+.25, y = (18.29/12), xend = (5.8/12)+.25, yend = (18.29/12)) +
+  geom_segment(x = (-11.5/12)+.25, y = (44.08/12), xend = (-11.5/12)+.25, yend = (18.29/12)) +
+  geom_segment(x = (5.5/12)+.25, y = (44.08/12), xend = (5.8/12)+.25, yend = (18.29/12))+
+  
+  #creating the inner quadrants of the strike zone
+  geom_segment(x = (-11.5/12)+.25, y = (35.48/12), xend = (-5.835/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (35.48/12), xend = (-0.165/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (35.48/12), xend = (5.5/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-11.5/12)+.25, y = (26.88/12), xend = (-5.835/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (26.88/12), xend = (-0.165/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (26.88/12), xend = (5.5/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (44.08/12), xend = (-5.835/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (35.48/12), xend = (-5.835/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-5.835/12)+.25, y = (26.88/12), xend = (-5.835/12)+.25, yend = (18.29/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (44.08/12), xend = (-0.165/12)+.25, yend = (35.48/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (35.48/12), xend = (-0.165/12)+.25, yend = (26.88/12), linewidth = .3) +
+  geom_segment(x = (-0.165/12)+.25, y = (26.88/12), xend = (-0.165/12)+.25, yend = (18.29/12), linewidth = .3)+
+  
+  #creating home plate
+  geom_segment(x = (-.708 -(2/12))+.25, y = (.708/2), xend = (0-(3/12))+.25, yend = (1.417/2.5)) +
+  geom_segment(x = (0-(3/12))+.25, y = (1.417/2.5), xend = (.708-(4/12))+.25, yend = (.708/2)) +
+  geom_segment(x = (.708-(4/12))+.25, y = (.708/2), xend = (.708-(3/12))+.25, yend = (0)) +
+  geom_segment(x = (-.708-(3/12))+.25, y = (0), xend = (-.708-(2/12))+.25, yend = (.708/2)) +
+  geom_segment(x = (-.708-(3/12))+.25, y = (0), xend = (.708-(3/12))+.25, yend = (0))+
+  
+  #adjusting details
+  ggtitle("Pitch Strike Zone Location")+
+  theme(
+        plot.title = element_text(color = 'black', size = 16, face = "bold", hjust = 0.5),
+        axis.title.x = element_text(color = 'black', size = 14, face = "bold", hjust = 0.5),
+        axis.title.y = element_text(color = 'black', size = 14, face = "bold", hjust = 0.5),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14, face = "bold"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.spacing = unit(3, "lines")) +
+ xlim(-3, 3) + ylim(0, 5) +
+  labs(x = "Pitch Horizontal Location (ft)", 
+       y = "Pitch Height from Ground (ft)", color = "Pitch Type")
+
+ggplotly(filtered_sz, tooltip = "text")
+```
+
+Now lets look at how VAA correlates with batted ball data. From the correlogram below we see that of the batted ball data I chose, there isn't much correlation with VAA. In fact, the highest correlation is launch_angle around 0.3. Far too low to really be of much value.
+
+```{r}
+Thompson_corr_df <- subset(
+  filtered_below_four, select = c(VAA, zone, hit_distance_sc, launch_speed, launch_angle,
+                                  estimated_ba_using_speedangle,
+                                  estimated_woba_using_speedangle,
+                                  woba_value,
+                                  launch_speed_angle, spin_axis, is_strike, is_ball,
+                                  into_play))
+
+names(Thompson_corr_df)[names(Thompson_corr_df) == "estimated_ba_using_speedangle"] <- "est_ba_spdangle"
+names(Thompson_corr_df)[names(Thompson_corr_df) == "estimated_woba_using_speedangle"] <- "est_woba_spdangle"
+
+Thompson_corr_df <- replace(Thompson_corr_df, is.na(Thompson_corr_df), 0)
+
+Thompson_correlation <- cor(Thompson_corr_df)
+corrplot(Thompson_correlation, method = "color")
+```
+
+Moving on from this analysis I would like to dive deeper into VAA and how it affects swing and misses in relation to where it's located within the strike zone and what type of pitch was thrown. I also want to do a deeper dive with launch_speed_angle. I know that my analysis wasn't perfect, especially when it comes to the correlation of VAA and my chosen variables, so if you have any advice please let me know!
+
+## **Opinion on Quarto**
+
+I had a lot of fun during this analysis using Quarto. I thought it was interesting all the different ways you could configure your layout. I chose mine to be fairly straightforward, however, in the future I plan on coming up with different layouts. This was also my first time making a project with the Visual button in RStudio. I think that made this entire project a lot easier for me.
+
+A couple notes on Quarto:
+
+-   I found the rendering of this project, to be quite time consuming upon first render. This is probably due to my data set having to download the file from baseballr. For that code chunk you'll see that cache is equal to true. I hope that this solves the long load time for those that wish to view this.
+
+-   When it comes to code chunks and wanting to put in things like figure captions or arranging layouts, I found this to be a bit tricky. YAML is very specific in the way these lines are written, especially when it comes to the number of spaces included (I found this out the hard way). So, just keep that in mind.
+
+-   I loved the ease with which I could create references, or asides, and I especially loved how good they looked within the analysis.
+
+I think that I'm going to keep using Quarto and keep practicing with it. For one of my next projects I'm going to try and create a dashboard with Quarto, following their documentation and guides.
