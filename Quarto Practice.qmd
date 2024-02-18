@@ -2,7 +2,7 @@
 title: "Quarto Practice"
 author: "Evan Howard"
 format: 
-  pdf: 
+  html: 
     code-fold: true
 bibliography: references.bib
 ---
