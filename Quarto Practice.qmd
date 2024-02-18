@@ -371,3 +371,5 @@ A couple notes on Quarto:
 -   I loved the ease with which I could create references, or asides, and I especially loved how good they looked within the analysis.
 
 I think that I'm going to keep using Quarto and keep practicing with it. For one of my next projects I'm going to try and create a dashboard with Quarto, following their documentation and guides.
+
+Hope you liked my project!
